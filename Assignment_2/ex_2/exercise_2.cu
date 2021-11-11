@@ -87,5 +87,8 @@ int main(int argc, char** argv)
     printf("saxpy (ms)\tcu_saxpy (ms)\tcu_saxpy + mem (ms)\n");
     printf("%f\t%f\t%f\n", saxpy_time.count() * 1e3, cu_saxpy_time.count() * 1e3, cu_mem_saxpy_time.count() * 1e3);
 
+    cudaFree(d_x);
+    cudaFree(d_y);
+
     return 0;
 }
