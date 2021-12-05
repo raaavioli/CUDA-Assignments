@@ -36,19 +36,12 @@ void saxpy (float* X, float* Y, int a, int n) {
     Y[i] += X[i] * a;
 }
 
-void openACC_saxpy (float* X, float* Y, int a, int n) {
-  #pragma acc parallel loop {
-    for (int i = 0; i < n; i++)
-      Y[i] += X[i] * a;
-  }
-}
-
 int main(int argc, char *argv[]) {
   cl_platform_id* platforms; 
   cl_uint n_platform;
   cl_int err;
   tval times[2] = { 0 };
-  double elapsed[3] = { 0 };
+  double elapsed[2] = { 0 };
 
   // Find OpenCL Platforms
   CHK_ERROR(clGetPlatformIDs(0, NULL, &n_platform));
@@ -87,14 +80,6 @@ int main(int argc, char *argv[]) {
   saxpy(Y, X, a, array_count);
   gettimeofday(&times[1], NULL);
   elapsed[0] = get_elapsed(times[0], times[1]);
-  printf("Done!\n");
-
-  // OpenACC saxpy
-  printf("Computing SAXPY on the OpenACC... ");
-  gettimeofday(&times[0], NULL);
-  saxpy(Y, X, a, array_count);
-  gettimeofday(&times[1], NULL);
-  elapsed[2] = get_elapsed(times[0], times[1]);
   printf("Done!\n");
 
   // OpenCL saxpy
@@ -162,8 +147,8 @@ int main(int argc, char *argv[]) {
   if (correct)
     printf(" Correct!\n");
 
-  printf("GPU (ms)\tCPU (ms)\tOpenACC\n");
-  printf("%f\t%f\t%f\n", elapsed[1], elapsed[0], elapsed[2]);
+  printf("GPU (ms)\tCPU (ms)\n");
+  printf("%f\t%f\n", elapsed[1], elapsed[0]);
   
   // Finally, release all that we have allocated.
   CHK_ERROR(clReleaseCommandQueue(cmd_queue));
