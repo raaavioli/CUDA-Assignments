@@ -48,7 +48,7 @@ int main(int argc, char *argv[]) {
   cl_uint n_platform;
   cl_int err;
   tval times[2] = { 0 };
-  double elapsed[2] = { 0 };
+  double elapsed[3] = { 0 };
 
   // Find OpenCL Platforms
   CHK_ERROR(clGetPlatformIDs(0, NULL, &n_platform));
@@ -82,11 +82,19 @@ int main(int argc, char *argv[]) {
     X[i] = Y[i] = 2.0f;
 
   // CPU saxpy
-  printf("Computing SAXPY on the CPU… ");
+  printf("Computing SAXPY on the CPU... ");
   gettimeofday(&times[0], NULL);
   saxpy(Y, X, a, array_count);
   gettimeofday(&times[1], NULL);
   elapsed[0] = get_elapsed(times[0], times[1]);
+  printf("Done!\n");
+
+  // OpenACC saxpy
+  printf("Computing SAXPY on the OpenACC... ");
+  gettimeofday(&times[0], NULL);
+  saxpy(Y, X, a, array_count);
+  gettimeofday(&times[1], NULL);
+  elapsed[2] = get_elapsed(times[0], times[1]);
   printf("Done!\n");
 
   // OpenCL saxpy
@@ -124,7 +132,7 @@ int main(int argc, char *argv[]) {
   size_t global_work_size = array_count + (local_work_size - array_count % local_work_size);
   printf("OpenCL kernel settings: \n\tArray size: %d, Work items: %d, Work groups: %d, Work group size: %d\n", 
     array_count, (int) global_work_size, (int) (global_work_size / local_work_size), (int) local_work_size);
-  printf("Computing SAXPY on the GPU… ");
+  printf("Computing SAXPY on the GPU... ");
   gettimeofday(&times[0], NULL);
   CHK_ERROR(clEnqueueNDRangeKernel(cmd_queue, kernel, 1, NULL, &global_work_size, &local_work_size, 0, NULL, NULL));
   printf("Done!\n");
@@ -154,8 +162,8 @@ int main(int argc, char *argv[]) {
   if (correct)
     printf(" Correct!\n");
 
-  printf("GPU (ms)\tCPU (ms)\n");
-  printf("%f\t %f\n", elapsed[1], elapsed[0]);
+  printf("GPU (ms)\tCPU (ms)\tOpenACC\n");
+  printf("%f\t%f\t%f\n", elapsed[1], elapsed[0], elapsed[2]);
   
   // Finally, release all that we have allocated.
   CHK_ERROR(clReleaseCommandQueue(cmd_queue));
