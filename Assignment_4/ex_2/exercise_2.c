@@ -2,7 +2,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/time.h>
 #include <CL/cl.h>
+
+typedef struct timeval tval;
 
 // This is a macro for checking the error variable.
 #define CHK_ERROR(err) \
@@ -12,40 +15,52 @@
 // A errorCode to string converter (forward declaration)
 const char* clGetErrorString(int);
 
+/**
+ * Calculates the elapsed time between two time intervals (in milliseconds).
+ */
+double get_elapsed(tval t0, tval t1)
+{
+    return (double)(t1.tv_sec - t0.tv_sec) * 1000.0L + (double)(t1.tv_usec - t0.tv_usec) / 1000.0L;
+}
 
 const char *mykernel = 
 "__kernel \
-void hello_world () { \
-  int group_x = get_group_id(0); \
-  int group_y = get_group_id(1); \
-  int group_z = get_group_id(2); \
-  int x = get_local_id(0); \
-  int y = get_local_id(1); \
-  int z = get_local_id(2); \
-  printf(\"Hello World! group: (%d, %d, %d), item: (%d, %d, %d) \\n\", group_x, group_y, group_y, x, y, z); \
+void saxpy (__global float* X, __global float* Y, int a, int n) { \
+  int gid = get_global_id(0); \
+  if (gid >= n) return; \
+  Y[gid] = Y[gid] + a * X[gid]; \
 } ";
 
+void saxpy (float* X, float* Y, int a, int n) {
+  for (int i = 0; i < n; i++)
+    Y[i] += X[i] * a;
+}
 
-int main(int argc, char *argv) {
+void openACC_saxpy (float* X, float* Y, int a, int n) {
+  #pragma acc parallel loop {
+    for (int i = 0; i < n; i++)
+      Y[i] += X[i] * a;
+  }
+}
+
+int main(int argc, char *argv[]) {
   cl_platform_id* platforms; 
   cl_uint n_platform;
+  cl_int err;
+  tval times[2] = { 0 };
+  double elapsed[2] = { 0 };
 
   // Find OpenCL Platforms
-  cl_int err;
-  err = clGetPlatformIDs(0, NULL, &n_platform); 
-  CHK_ERROR(err);
+  CHK_ERROR(clGetPlatformIDs(0, NULL, &n_platform));
   platforms = (cl_platform_id *) malloc(sizeof(cl_platform_id)*n_platform);
-  err = clGetPlatformIDs(n_platform, platforms, NULL); 
-  CHK_ERROR(err);
+  CHK_ERROR(clGetPlatformIDs(n_platform, platforms, NULL));
 
   // Find and sort devices
   cl_device_id* device_list; 
   cl_uint n_devices;
-  err = clGetDeviceIDs( platforms[0], CL_DEVICE_TYPE_GPU, 0, NULL, &n_devices);
-  CHK_ERROR(err);
+  CHK_ERROR(clGetDeviceIDs( platforms[0], CL_DEVICE_TYPE_GPU, 0, NULL, &n_devices));
   device_list = (cl_device_id *) malloc(sizeof(cl_device_id)*n_devices);
-  err = clGetDeviceIDs( platforms[0],CL_DEVICE_TYPE_GPU, n_devices, device_list, NULL);
-  CHK_ERROR(err);
+  CHK_ERROR(clGetDeviceIDs( platforms[0],CL_DEVICE_TYPE_GPU, n_devices, device_list, NULL));
   
   // Create and initialize an OpenCL context
   cl_context context = clCreateContext( NULL, n_devices, device_list, NULL, NULL, &err);
@@ -53,7 +68,35 @@ int main(int argc, char *argv) {
 
   // Create a command queue
   cl_command_queue cmd_queue = clCreateCommandQueue(context, device_list[0], 0, &err);
-  CHK_ERROR(err); 
+  CHK_ERROR(err);
+
+  int array_count = 1e4;
+  if (argc == 2)
+    array_count = atoi(argv[1]);
+  int a = 2.0f;
+  float* X, *Y, *Y_res;
+  X = malloc(array_count * sizeof(float));
+  Y = malloc(array_count * sizeof(float));
+  Y_res = malloc(array_count * sizeof(float));
+  for (int i = 0; i < array_count; i++)
+    X[i] = Y[i] = 2.0f;
+
+  // CPU saxpy
+  printf("Computing SAXPY on the CPU… ");
+  gettimeofday(&times[0], NULL);
+  saxpy(Y, X, a, array_count);
+  gettimeofday(&times[1], NULL);
+  elapsed[0] = get_elapsed(times[0], times[1]);
+  printf("Done!\n");
+
+  // OpenCL saxpy
+  cl_mem X_dev = clCreateBuffer(context, CL_MEM_READ_ONLY, array_count * sizeof(float), NULL, &err); 
+  CHK_ERROR(err);
+  cl_mem Y_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, array_count * sizeof(float), NULL, &err); 
+  CHK_ERROR(err);
+
+  CHK_ERROR(clEnqueueWriteBuffer(cmd_queue, X_dev, CL_TRUE, 0, array_count * sizeof(float), X, 0, NULL, NULL));
+  CHK_ERROR(clEnqueueWriteBuffer(cmd_queue, Y_dev, CL_TRUE, 0, array_count * sizeof(float), Y, 0, NULL, NULL));
 
   // Create an OpenCL program (cl_program)
   cl_program program = clCreateProgramWithSource(context, 1, &mykernel, NULL, &err);
@@ -70,30 +113,59 @@ int main(int argc, char *argv) {
   }
 
   // Create a kernel (clCreateKernel)
-  cl_kernel kernel = clCreateKernel(program, "hello_world", &err);
-  CHK_ERROR(err);
-  
+  cl_kernel kernel = clCreateKernel(program, "saxpy", &err);
+  CHK_ERROR(clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*) &X_dev));
+  CHK_ERROR(clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*) &Y_dev));
+  CHK_ERROR(clSetKernelArg(kernel, 2, sizeof(int), &a));
+  CHK_ERROR(clSetKernelArg(kernel, 3, sizeof(int), &array_count));
+
   // Invoke the kernel (clEnqueueNDRangeKernel)
-  size_t global_work_size[] = {8, 8, 4};
-  size_t local_work_size[] = {4, 4, 2};
-  printf("Starting\n");
-  clEnqueueNDRangeKernel(cmd_queue, kernel, 3, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+  size_t local_work_size = 256;
+  size_t global_work_size = array_count + (local_work_size - array_count % local_work_size);
+  printf("OpenCL kernel settings: \n\tArray size: %d, Work items: %d, Work groups: %d, Work group size: %d\n", 
+    array_count, (int) global_work_size, (int) (global_work_size / local_work_size), (int) local_work_size);
+  printf("Computing SAXPY on the GPU… ");
+  gettimeofday(&times[0], NULL);
+  CHK_ERROR(clEnqueueNDRangeKernel(cmd_queue, kernel, 1, NULL, &global_work_size, &local_work_size, 0, NULL, NULL));
+  printf("Done!\n");
 
   // Wait for all commands in the queue to finish (clFinish)
-  err = clFlush(cmd_queue);
-  CHK_ERROR(err);
-  err = clFinish(cmd_queue);
-  CHK_ERROR(err);
-  printf("Ending\n");
+  CHK_ERROR(clFlush(cmd_queue));
+  CHK_ERROR(clFinish(cmd_queue));
+  gettimeofday(&times[1], NULL);
+  elapsed[1] = get_elapsed(times[0], times[1]);
+  
+  CHK_ERROR(clEnqueueReadBuffer(cmd_queue, Y_dev, CL_TRUE, 0, array_count * sizeof(float), Y_res, 0, NULL, NULL));
+
+
+  // Check correctness
+  int correct = 1;
+  printf("Comparing the output for each implementation…");
+  for (int i = 0; i < array_count; i++)
+  {
+    if ((Y_res[i] - (a * X[i] + Y[i])) > 1e-3)
+    {
+      printf("\nError at i = %d: Y != a * X + Y. | %f != %f \n", i, Y_res[i], (a * X[i] + Y[i]));
+      correct = 0;
+      break;
+    }
+  }
+
+  if (correct)
+    printf(" Correct!\n");
+
+  printf("GPU (ms)\tCPU (ms)\n");
+  printf("%f\t %f\n", elapsed[1], elapsed[0]);
   
   // Finally, release all that we have allocated.
-  err = clReleaseCommandQueue(cmd_queue);
-  CHK_ERROR(err);
-  err = clReleaseContext(context);
-  CHK_ERROR(err);
+  CHK_ERROR(clReleaseCommandQueue(cmd_queue));
+  CHK_ERROR(clReleaseContext(context));
 
-  free(platforms);
   free(device_list);
+  free(platforms);
+  free(Y_res);
+  free(Y);
+  free(X);
   
   return 0;
 }
